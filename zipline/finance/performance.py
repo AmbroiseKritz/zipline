@@ -312,6 +312,10 @@ class PerformanceTracker(object):
             for perf_period in self.perf_periods:
                 perf_period.record_order(event)
 
+        elif event.type == zp.DATASOURCE_TYPE.COMMISSION:
+            for perf_period in self.perf_periods:
+                perf_period.handle_commission(event)
+
         elif event.type == zp.DATASOURCE_TYPE.CUSTOM:
             pass
         elif event.type == zp.DATASOURCE_TYPE.BENCHMARK:
@@ -572,6 +576,26 @@ class Position(object):
             self.cost_basis = total_cost / total_shares
             self.amount = self.amount + txn.amount
 
+    def handle_async_commission(self, commission):
+        """
+        A note about cost-basis in zipline: all positions are considered
+        to share a cost basis, even if they were executed in different
+        transactions with different commission costs, different prices, etc.
+
+        Due to limitations about how zipline handles positions, zipline will
+        currently spread an asynchronously-delivered commission charge across
+        all shares in a position.
+        """
+
+        if commission.sid != self.sid:
+            raise NameError("Updating a commission for a different sid?")
+        if commission.cost == 0.0:
+            return
+
+        prev_cost = self.cost_basis * self.amount
+        new_cost = prev_cost + commission.cost
+        self.cost_basis = new_cost / self.amount
+
     def __repr__(self):
         template = "sid: {sid}, amount: {amount}, cost_basis: {cost_basis}, \
         last_sale_price: {last_sale_price}"
@@ -700,6 +724,14 @@ class PerformancePeriod(object):
     def handle_cash_payment(self, payment_amount):
         self.period_cash_flow += payment_amount
         self.cumulative_capital_used -= payment_amount
+
+    def handle_commission(self, commission):
+        # Deduct from our total cash pool.
+        negative_commission = -1.0 * commission.cost
+        self.handle_cash_payment(negative_commission)
+        # Adjust the cost basis of the stock if we own it
+        if commission.sid in self.positions:
+            self.positions[commission.sid].handle_async_commission(commission)
 
     def calculate_performance(self):
         self.ending_value = self.calculate_positions_value()
